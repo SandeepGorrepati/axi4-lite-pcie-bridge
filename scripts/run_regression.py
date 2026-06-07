@@ -52,15 +52,20 @@ def main():
 
     log_text = LOG.read_text()
     required = [
-        "AXI TESTBENCH SUMMARY",
         "AXI PROTOCOL CHECK SUMMARY",
         "AXI FUNCTIONAL COVERAGE SUMMARY",
         "FAIL=0",
     ]
 
     missing = [item for item in required if item not in log_text]
-    if sim_result.returncode != 0 or missing:
+    tb_fail_lines = [line for line in log_text.splitlines() if line.startswith("FAIL:") or "[TB][FAIL]" in line]
+
+    if sim_result.returncode != 0 or missing or tb_fail_lines:
         print(f"REGRESSION FAILED: missing markers: {missing}", file=sys.stderr)
+        if tb_fail_lines:
+            print("REGRESSION FAILED: testbench FAIL lines detected:", file=sys.stderr)
+            for line in tb_fail_lines:
+                print(line, file=sys.stderr)
         return 1
 
     print(f"REGRESSION PASSED: log saved to {LOG}")
