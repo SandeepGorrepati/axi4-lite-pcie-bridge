@@ -18,7 +18,7 @@ build:
 	mkdir -p build proof
 
 compile: build
-	iverilog -g2012 -Wall -o $(SIM_OUT) $(RTL) $(TB)
+	iverilog -g2012 -Wall -s tb_axi_pcie_bridge -o $(SIM_OUT) $(RTL) $(TB)
 
 run: compile
 	vvp $(SIM_OUT) | tee $(LOG)

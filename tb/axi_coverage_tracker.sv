@@ -55,7 +55,7 @@ module axi_coverage_tracker (
         end
     endtask
 
-    always_ff @(posedge clk or posedge rst) begin
+    always @(posedge clk or posedge rst) begin
         if (rst) begin
             write_count    <= 0;
             read_count     <= 0;

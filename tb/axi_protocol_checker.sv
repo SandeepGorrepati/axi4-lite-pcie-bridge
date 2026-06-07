@@ -38,7 +38,7 @@ module axi_protocol_checker (
     integer write_latency;
     integer read_latency;
 
-    always_ff @(posedge clk or posedge rst) begin
+    always @(posedge clk or posedge rst) begin
         if (rst) begin
             pass_count           <= 0;
             fail_count           <= 0;
