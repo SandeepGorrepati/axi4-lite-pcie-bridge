@@ -1,149 +1,58 @@
-# AXI4-Lite to PCIe-Style Transaction Bridge in Verilog
+# AXI4-Lite to educational packet bridge
 
-## Overview
-This project implements a simplified AXI4-Lite to PCIe-style transaction bridge in Verilog/SystemVerilog. It converts AXI4-Lite memory-mapped read/write requests into internal packetized PCIe-style transactions and returns completion responses back to the AXI interface.
+![Bridge regression](https://github.com/SandeepGorrepati/axi4-lite-pcie-bridge/actions/workflows/regression.yml/badge.svg)
 
-The design models transaction-layer behavior including AXI valid/ready handshakes, packet construction, FIFO buffering, transmit/receive flow, completion handling, and response generation.
+A SystemVerilog transaction bridge connecting AXI4-Lite to a FIFO-buffered, 76-bit internal packet interface and an on-chip memory endpoint. This is a PCIe-style educational packet format, not real PCIe TLP/link/PHY implementation, Gen3/Gen4 support, or PCIe compliance.
 
----
+## Implemented behavior
 
-## Architecture
+- Independently capture AW and W in either order; complete one write only after both arrive.
+- Serialize read/write ownership through request, completion, and AXI response acceptance.
+- Preserve B/R response VALID and payload while the master stalls.
+- Consume a transmitted packet exactly when VALID and external READY are both asserted.
+- Route error completions to B or R using the outstanding request type.
+- Apply all four byte enables to a 256-word memory behind a default 1 KiB window.
+- Return OKAY for valid addresses and SLVERR with a diagnostic read value for invalid accesses.
+- Reset cancels a partial request and clears the endpoint memory.
 
-```text
-AXI4-Lite Slave -> Packet Builder -> FIFO -> TX Engine -> RX Engine -> Completion Manager -> AXI Response
-```
+A partial write owns the input until the missing channel arrives. Reads are not accepted alongside an active/partial write. There is one complete transaction outstanding; the FIFO is not a claim of multi-outstanding AXI throughput. Tags are educational fields, not an independently validated PCIe completion-tag mechanism.
 
-### Key Components
-- **AXI4-Lite Slave Interface:** Accepts read/write address, data, and response handshakes
-- **Packet Builder:** Converts AXI transactions into simplified PCIe-style packet fields
-- **FIFO Buffer:** Decouples AXI request acceptance from transmit flow
-- **TX Engine:** Drives packetized requests based on transmit readiness
-- **RX Engine:** Models memory-side behavior and completion packet generation
-- **Completion Manager:** Converts completion packets back into AXI read/write responses
-- **Config Registers:** Provides address range control and bridge enable behavior
+## Reproduce with free tools
 
----
-
-## Packet Format
-
-| Field | Bits |
-|---|---:|
-| Tag | [75:72] |
-| Byte Enable | [71:68] |
-| Type | [67:64] |
-| Address | [63:32] |
-| Data | [31:0] |
-
-### Packet Types
-- `4'h1` -> Write Request
-- `4'h2` -> Read Request
-- `4'h8` -> Completion without data
-- `4'h9` -> Completion with data
-- `4'hF` -> Error
-
----
-
-## Verification Environment
-
-The testbench verifies AXI4-Lite protocol behavior, packetized transaction flow, read/write response sequencing, and data integrity using directed and randomized scenarios.
-
-```text
-AXI Tasks -> DUT -> Protocol Checker
-              |-> Coverage Tracker
-              |-> Testbench PASS/FAIL Checks
-```
-
-### Verification Components
-- `tb/tb_axi_pcie_bridge.sv`: directed and randomized AXI transaction testbench
-- `tb/axi_protocol_checker.sv`: Icarus-friendly SystemVerilog protocol checker
-- `tb/axi_coverage_tracker.sv`: functional coverage tracker for operation/address/response bins
-- `scripts/run_regression.py`: Python regression runner that compiles, runs, checks markers, and saves logs
-- `TESTPLAN.md`: scenario, protocol-check, coverage, and pass-criteria documentation
-
----
-
-## Test Scenarios
-
-- Empty address read returns `0x00000000`
-- Directed write/readback at `0x10`
-- Directed write/readback at `0x20`
-- Overwrite behavior at `0x20`, verifying latest data is returned
-- Mid-range address write/readback
-- High-range address write/readback
-- Randomized aligned address/data write-readback scenarios
-
----
-
-## Protocol Checks
-
-Implemented in `tb/axi_protocol_checker.sv`:
-
-- Known-value checks for AXI address, data, and strobe signals during valid phases
-- Write response sequencing: `BVALID` should follow accepted write transaction
-- Read response sequencing: `RVALID` should follow accepted read transaction
-- No spurious write/read response without pending transaction
-- `BRESP` and `RRESP` should report OKAY response status
-
----
-
-## Functional Coverage Tracking
-
-Implemented in `tb/axi_coverage_tracker.sv`:
-
-- Operation bins: accepted write/read transactions
-- Address range bins: low, mid, and high address ranges
-- Response bins: observed write/read responses
-- Cross-style bins: write/read distribution across address ranges
-
----
-
-## Latest Regression Result
-
-A passing run includes:
-
-```text
-AXI PROTOCOL CHECK SUMMARY
-WRITES=11 READS=12 BRESP=11 RRESP=12 PASS=46 FAIL=0
-
-AXI FUNCTIONAL COVERAGE SUMMARY
-Operation bins       : writes=11 reads=12
-Address range bins   : low=11 mid=2 high=10
-Response bins        : bresp_seen=11 rresp_seen=12
-Cross op x addr bins : W_LOW=5 W_MID=1 W_HIGH=5 R_LOW=6 R_MID=1 R_HIGH=5
-```
-
----
-
-## Waveform Proof
-
-### Write Transaction Flow
-![Write Flow](screenshots/axi_pcie_write_flow.png)
-
-### Read Transaction Flow
-![Read Flow](screenshots/axi_pcie_read_transaction_flow.png)
-
-### Write -> Readback Verification
-![Readback](screenshots/axi_pcie_write_readback_verification.png)
-
----
-
-## How to Run
-
-### Recommended regression command
+Install Python 3 and Icarus Verilog; from the root:
 
 ```bash
 python3 scripts/run_regression.py
+python3 scripts/gen_vectors.py
+iverilog -g2012 -s tb_bridge_protocol -o build/stress rtl/*.sv tb/tb_bridge_protocol.sv
+vvp build/stress
 ```
 
-### Manual command
+GitHub Actions runs both tests and retains logs.
 
-```bash
-make clean
-make run
-```
+## Verified tests
 
-Open waveform:
+| Layer | Evidence |
+|---|---|
+| Legacy directed/random test | 12 data checks; protocol summary 11 writes, 12 reads, zero failures |
+| Independent Python byte-memory oracle | 1,075 write/read pairs with data/response checks |
+| Channel timing | Simultaneous, AW-first, W-first; randomized delays |
+| Byte strobes | All 16 masks plus partial/random writes and full final readback |
+| Backpressure | B/R response holds plus periodic stalls of packet TX READY |
+| Errors | Invalid-address read/write status, valid-memory alias protection |
+| Reset | Cancel partial AW-only write; check no orphan response and recovery |
+| Packet accounting | Exactly 2,152 packet transfers/completions, including post-reset recovery |
 
-```bash
-gtkwave build/axi_pcie_bridge.vcd
-```
+The legacy procedural checker and coverage tracker assume simultaneous AW/W and sample response cycles; they are used only by the legacy directed test. The separate oracle stress test checks independent channel behavior and response holds. No aggregate coverage percentage is claimed.
+
+## Bugs found and fixed
+
+The old top level advertised independent READY signals but only processed writes when AWVALID and WVALID were simultaneously high. It returned to accepting requests before stalled responses were consumed. The loopback receiver also consumed TX VALID while external TX READY was low, potentially repeating completions, and generic error completions were always routed as write responses.
+
+The upgraded design stores independent channel handshakes, holds transaction ownership through AXI response acceptance, gates packet reception by the actual transfer condition, and uses the outstanding request type to route errors. The stress test checks data and exact packet/completion counts.
+
+## Limits
+
+There is no PCIe PHY, LTSSM, real TLP header, CRC, credit/replay mechanism, enumeration, DMA, interrupt, multi-clock CDC, or hardware validation. The endpoint is an educational memory model. Default aligned 32-bit accesses and the four-entry FIFO are the tested configuration. This is a bus/packet-verification project, not a deployable PCIe controller.
+
+See [upgrade validation](proof/UPGRADE_VALIDATION.md).

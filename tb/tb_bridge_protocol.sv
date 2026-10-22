@@ -73,7 +73,7 @@ module tb_bridge_protocol;
     write_word(0,32'h12345678,15,0,0,4,0);
     read_word(0,32'h12345678,4,0);
     if(tx_count !== 2152 || cpl_count !== 2152) $fatal(1,"packet/completion accounting tx=%0d cpl=%0d",tx_count,cpl_count);
-    $display("PASS: %0d oracle write/read pairs; AW/W skew, 16 strobes, backpressure, DECERR, alias protection, reset",n);
+    $display("PASS: %0d oracle write/read pairs; AW/W skew, 16 strobes, backpressure, SLVERR, alias protection, reset",n);
     $finish;
   end
   initial begin #2000000; $fatal(1,"protocol regression watchdog"); end
