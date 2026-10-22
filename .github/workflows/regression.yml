@@ -1,0 +1,25 @@
+name: Bridge regression
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y iverilog
+      - name: Existing directed regression
+        run: python3 scripts/run_regression.py
+      - name: Oracle, independent AW/W, stalls, and errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gen_vectors.py
+          iverilog -g2012 -s tb_bridge_protocol -o build/stress rtl/*.sv tb/tb_bridge_protocol.sv
+          vvp build/stress | tee proof/stress.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bridge-evidence
+          path: proof/*.log

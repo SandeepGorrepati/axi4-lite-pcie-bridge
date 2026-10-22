@@ -32,10 +32,12 @@ module axi_pcie_bridge_top (
 
     typedef enum logic [1:0] {
         IDLE      = 2'b00,
-        WAIT_RESP = 2'b01
+        WAIT_RESP = 2'b01,
+        WAIT_AXI = 2'b10
     } state_t;
 
     state_t state;
+    logic aw_pending, w_pending;
 
     logic        req_is_read;
     logic [31:0] req_addr;
@@ -114,7 +116,7 @@ module axi_pcie_bridge_top (
     pcie_rx_engine u_pcie_rx_engine (
         .clk           (clk),
         .rst           (rst),
-        .pcie_tx_valid (tx_valid),
+        .pcie_tx_valid (tx_valid && pcie_tx_ready),
         .pcie_tx_ready (rx_ready_unused),
         .pcie_tx_data  (tx_data),
         .bridge_enable (bridge_enable),
@@ -133,84 +135,55 @@ module axi_pcie_bridge_top (
         .resp_status  (resp_status)
     );
 
+    // Serialized transaction ownership. AW and W may arrive independently.
+    assign s_axi_awready = !rst && (state==IDLE) && !aw_pending;
+    assign s_axi_wready  = !rst && (state==IDLE) && !w_pending;
+    // A partial write owns the interface until its other channel arrives.
+    assign s_axi_arready = !rst && (state==IDLE) && !aw_pending && !w_pending
+                          && !s_axi_awvalid && !s_axi_wvalid;
     always_ff @(posedge clk or posedge rst) begin
-        if (rst) begin
-            state         <= IDLE;
-            req_is_read   <= 1'b0;
-            req_addr      <= 32'h0;
-            req_wdata     <= 32'h0;
-            req_wstrb     <= 4'h0;
-            req_tag       <= 4'h0;
-            fifo_wr_en    <= 1'b0;
-
-            s_axi_awready <= 1'b1;
-            s_axi_wready  <= 1'b1;
-            s_axi_bvalid  <= 1'b0;
-            s_axi_bresp   <= 2'b00;
-
-            s_axi_arready <= 1'b1;
-            s_axi_rvalid  <= 1'b0;
-            s_axi_rresp   <= 2'b00;
-            s_axi_rdata   <= 32'h0;
+        if(rst) begin
+            state<=IDLE; aw_pending<=0; w_pending<=0;
+            req_is_read<=0; req_addr<=0; req_wdata<=0; req_wstrb<=0;
+            req_tag<=0; fifo_wr_en<=0;
+            s_axi_bvalid<=0; s_axi_bresp<=0;
+            s_axi_rvalid<=0; s_axi_rdata<=0; s_axi_rresp<=0;
         end else begin
-            fifo_wr_en <= 1'b0;
-
-            if (s_axi_bvalid && s_axi_bready)
-                s_axi_bvalid <= 1'b0;
-
-            if (s_axi_rvalid && s_axi_rready)
-                s_axi_rvalid <= 1'b0;
-
-            case (state)
+            fifo_wr_en<=0;
+            if(s_axi_bvalid && s_axi_bready) s_axi_bvalid<=0;
+            if(s_axi_rvalid && s_axi_rready) s_axi_rvalid<=0;
+            case(state)
                 IDLE: begin
-                    s_axi_awready <= !fifo_full;
-                    s_axi_wready  <= !fifo_full;
-                    s_axi_arready <= !fifo_full;
-
-                    if (s_axi_awvalid && s_axi_wvalid && !fifo_full) begin
-                        req_is_read <= 1'b0;
-                        req_addr    <= s_axi_awaddr;
-                        req_wdata   <= s_axi_wdata;
-                        req_wstrb   <= s_axi_wstrb;
-                        req_tag     <= req_tag + 1'b1;
-                        fifo_wr_en  <= 1'b1;
-
-                        s_axi_awready <= 1'b0;
-                        s_axi_wready  <= 1'b0;
-                        s_axi_arready <= 1'b0;
-                        state         <= WAIT_RESP;
-                    end else if (s_axi_arvalid && !fifo_full) begin
-                        req_is_read <= 1'b1;
-                        req_addr    <= s_axi_araddr;
-                        req_wdata   <= 32'h0;
-                        req_wstrb   <= 4'h0;
-                        req_tag     <= req_tag + 1'b1;
-                        fifo_wr_en  <= 1'b1;
-
-                        s_axi_awready <= 1'b0;
-                        s_axi_wready  <= 1'b0;
-                        s_axi_arready <= 1'b0;
-                        state         <= WAIT_RESP;
+                    if(s_axi_awvalid && s_axi_awready) begin
+                        req_addr<=s_axi_awaddr; aw_pending<=1;
+                    end
+                    if(s_axi_wvalid && s_axi_wready) begin
+                        req_wdata<=s_axi_wdata; req_wstrb<=s_axi_wstrb; w_pending<=1;
+                    end
+                    if(aw_pending && w_pending && !fifo_full) begin
+                        req_is_read<=0; req_tag<=req_tag+1'b1;
+                        fifo_wr_en<=1; aw_pending<=0; w_pending<=0;
+                        state<=WAIT_RESP;
+                    end else if(s_axi_arvalid && s_axi_arready && !fifo_full) begin
+                        req_is_read<=1; req_addr<=s_axi_araddr;
+                        req_wdata<=0; req_wstrb<=0; req_tag<=req_tag+1'b1;
+                        fifo_wr_en<=1; state<=WAIT_RESP;
                     end
                 end
-
-                WAIT_RESP: begin
-                    if (resp_valid) begin
-                        if (resp_is_read) begin
-                            s_axi_rvalid <= 1'b1;
-                            s_axi_rdata  <= resp_rdata;
-                            s_axi_rresp  <= resp_status;
-                        end else begin
-                            s_axi_bvalid <= 1'b1;
-                            s_axi_bresp  <= resp_status;
-                        end
-                        state <= IDLE;
+                WAIT_RESP: if(resp_valid) begin
+                    // Error packets have no read/write subtype; route using
+                    // the outstanding request, not the completion type.
+                    if(req_is_read) begin
+                        s_axi_rvalid<=1; s_axi_rdata<=resp_rdata; s_axi_rresp<=resp_status;
+                    end else begin
+                        s_axi_bvalid<=1; s_axi_bresp<=resp_status;
                     end
+                    state<=WAIT_AXI;
                 end
-
-                default: state <= IDLE;
+                WAIT_AXI: if((s_axi_bvalid && s_axi_bready) || (s_axi_rvalid && s_axi_rready))
+                    state<=IDLE;
+                default: state<=IDLE;
             endcase
         end
     end
-
 endmodule

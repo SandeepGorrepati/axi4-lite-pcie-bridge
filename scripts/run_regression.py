@@ -30,7 +30,7 @@ TB = [
 
 def run(cmd):
     print("+ " + " ".join(cmd))
-    return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
+    return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, timeout=60)
 
 
 def main():
@@ -60,7 +60,9 @@ def main():
     missing = [item for item in required if item not in log_text]
     tb_fail_lines = [line for line in log_text.splitlines() if line.startswith("FAIL:") or "[TB][FAIL]" in line]
 
-    if sim_result.returncode != 0 or missing or tb_fail_lines:
+    import re
+    checker_fail = "AXI CHECK FAIL" in log_text or re.search(r"FAIL=[1-9]",log_text)
+    if sim_result.returncode != 0 or missing or tb_fail_lines or checker_fail:
         print(f"REGRESSION FAILED: missing markers: {missing}", file=sys.stderr)
         if tb_fail_lines:
             print("REGRESSION FAILED: testbench FAIL lines detected:", file=sys.stderr)
@@ -74,3 +76,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
